@@ -17,6 +17,17 @@ type managementConnection struct {
 	parents map[string]map[string]string
 }
 
+func (r *managedResource) observedETag(model resourceModel) string {
+	observed := model.ETag.ValueString()
+	if r.spec.name == "key" || r.spec.name == "provider" {
+		return r.client.advanceParent(model.ID.ValueString(), observed)
+	}
+	if r.spec.name == "routing_policy" && model.Scope.ValueString() != "installation" {
+		return r.client.advanceParent(model.ParentID.ValueString(), observed)
+	}
+	return observed
+}
+
 func (c *managementConnection) observeParent(id, previous, current string) {
 	if previous == "" || current == "" || previous == current {
 		return

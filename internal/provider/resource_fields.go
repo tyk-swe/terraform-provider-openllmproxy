@@ -15,6 +15,9 @@ import (
 
 func (r *managedResource) readModel(ctx context.Context, source attributeReader, target *resourceModel) diag.Diagnostics {
 	diagnostics := readModel(ctx, source, target)
+	if r.spec.name == "routing_policy" {
+		diagnostics.Append(source.GetAttribute(ctx, path.Root("scope"), &target.Scope)...)
+	}
 	if r.spec.parent != "" {
 		diagnostics.Append(source.GetAttribute(ctx, path.Root(r.spec.parent), &target.ParentID)...)
 	}
@@ -23,6 +26,9 @@ func (r *managedResource) readModel(ctx context.Context, source attributeReader,
 
 func (r *managedResource) writeModel(ctx context.Context, target attributeWriter, model resourceModel) diag.Diagnostics {
 	diagnostics := writeModel(ctx, target, model)
+	if r.spec.name == "routing_policy" {
+		diagnostics.Append(target.SetAttribute(ctx, path.Root("scope"), model.Scope)...)
+	}
 	if r.spec.parent != "" {
 		diagnostics.Append(target.SetAttribute(ctx, path.Root(r.spec.parent), model.ParentID)...)
 	}
@@ -87,6 +93,11 @@ func (r *managedResource) importDefinition(operation management.Operation, objec
 }
 
 func (r *managedResource) updateDefinition(operation management.Operation, desired, prior json.RawMessage) (json.RawMessage, error) {
+	if r.spec.name == "routing_policy" {
+		// Policy PUT replaces the entire policy. Omitted optional facts return
+		// to defaults; they do not have merge-patch retention semantics.
+		return desired, nil
+	}
 	operation, err := r.definitionOperation(operation)
 	if err != nil {
 		return nil, err

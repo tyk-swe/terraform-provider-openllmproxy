@@ -66,6 +66,17 @@ func (r *managedResource) createChild(ctx context.Context, request resource.Crea
 }
 
 func (r *managedResource) importChild(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
+	if r.spec.name == "routing_policy" {
+		scope, id, found := strings.Cut(request.ID, "/")
+		if !found || validPolicyIdentity(scope, id) != nil {
+			response.Diagnostics.AddError("Invalid import identity", "Use installation/NIL_UUID, api-key/KEY_UUID, or route-draft/DRAFT_UUID.")
+			return
+		}
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("scope"), scope)...)
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("scope_id"), id)...)
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), id)...)
+		return
+	}
 	parent, child, found := strings.Cut(request.ID, "/")
 	_, parentError := uuid.Parse(parent)
 	_, childError := uuid.Parse(child)

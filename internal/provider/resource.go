@@ -34,6 +34,7 @@ type resourceModel struct {
 	Definition jsontypes.Normalized `tfsdk:"definition"`
 	ETag       types.String         `tfsdk:"etag"`
 	ParentID   types.String
+	Scope      types.String
 }
 
 func resourceFactories() []func() resource.Resource {
@@ -45,6 +46,7 @@ func resourceFactories() []func() resource.Resource {
 		{name: "provider", create: "create_provider", read: "get_provider", update: "update_provider", destroy: "delete_provider", parameter: "provider_id", secret: true, secretField: "credential", rotate: "rotate_provider_credential"},
 		{name: "credential_slot", create: "put_credential_slot", read: "get_credential_slot", update: "put_credential_slot", destroy: "delete_credential_slot", parameter: "slot_id", secret: true, secretField: "credential", parent: "provider_id", bodyField: "slot", collection: "credential_slots"},
 		{name: "route", create: "create_route", read: "get_route", update: "update_route", destroy: "retire_route", parameter: "route_id", retiredField: "retired_at"},
+		{name: "routing_policy", create: "put_routing_policy", read: "get_routing_policy", update: "put_routing_policy", destroy: "delete_routing_policy", parameter: "id", parent: "scope_id", collection: "get_routing_policy"},
 		{name: "key", create: "create_api_key", read: "get_api_key", update: "update_api_key", destroy: "revoke_api_key", parameter: "api_key_id", retiredField: "revoked_at"},
 	}
 	var factories []func() resource.Resource
@@ -69,6 +71,10 @@ func (r *managedResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	}
 	if r.spec.parent != "" {
 		response.Schema.Attributes[r.spec.parent] = schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Description: "Owning provider UUID. Changing it replaces the credential slot."}
+	}
+	if r.spec.name == "routing_policy" {
+		response.Schema.Attributes["scope"] = schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Description: "installation, api-key, or route-draft. Installation scope uses the nil UUID."}
+		response.Schema.Attributes["scope_id"] = schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Description: "Scoped resource UUID. Changing it replaces this policy."}
 	}
 	if r.spec.name == "key" {
 		response.Schema.Attributes["secret_file"] = schema.StringAttribute{Optional: true, Description: "Absolute private destination for the one-time generated API key. Only this path enters state. Changes require replacement.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}}
@@ -110,6 +116,16 @@ func (r *managedResource) ValidateConfig(ctx context.Context, request resource.V
 		response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("secret_file"), &destination)...)
 		if !destination.IsNull() && !destination.IsUnknown() && !filepath.IsAbs(destination.ValueString()) {
 			response.Diagnostics.AddAttributeError(path.Root("secret_file"), "Invalid secret destination", "Use an absolute private file path.")
+		}
+	}
+	if r.spec.name == "routing_policy" {
+		var scope, id types.String
+		response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("scope"), &scope)...)
+		response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("scope_id"), &id)...)
+		if !scope.IsUnknown() && !id.IsUnknown() {
+			if err := validPolicyIdentity(scope.ValueString(), id.ValueString()); err != nil {
+				response.Diagnostics.AddError("Invalid policy identity", err.Error())
+			}
 		}
 	}
 	if !r.spec.secret {
@@ -172,6 +188,9 @@ func (r *managedResource) call(ctx context.Context, name string, model resourceM
 			if parameter.In != "path" {
 				continue
 			}
+			if r.spec.name == "routing_policy" && parameter.Name == "scope" {
+				args.Path[parameter.Name] = model.Scope.ValueString()
+			}
 			if parameter.Name == r.spec.parameter {
 				args.Path[parameter.Name] = model.ID.ValueString()
 			}
@@ -180,10 +199,13 @@ func (r *managedResource) call(ctx context.Context, name string, model resourceM
 			}
 		}
 	}
-	if r.spec.name == "provider" && (name == r.spec.update || name == r.spec.destroy) {
-		args.IfMatch = r.client.advanceParent(model.ID.ValueString(), args.IfMatch)
+	if name == r.spec.update || name == r.spec.destroy {
+		args.IfMatch = r.observedETag(model)
 	}
 	result, err := r.client.Call(ctx, operation, args)
+	if err == nil && (r.spec.name == "key" || r.spec.name == "provider") && name == r.spec.update {
+		r.client.observeParent(model.ID.ValueString(), args.IfMatch, result.ETag)
+	}
 	if err == nil && r.spec.parent != "" {
 		r.client.observeParent(model.ParentID.ValueString(), result.PreviousParentETag, result.ParentETag)
 	}
@@ -230,6 +252,10 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 		return
 	}
 	defer clear(body)
+	if r.spec.name == "routing_policy" {
+		r.createPolicy(ctx, request, response, model, body)
+		return
+	}
 	if r.spec.parent != "" {
 		if !r.createChild(ctx, request, response, model, body) {
 			return
@@ -272,6 +298,27 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 	if err != nil {
 		response.Diagnostics.AddError("Resource refresh failed", err.Error())
 		return
+	}
+	if r.spec.name == "routing_policy" {
+		var envelope struct {
+			Configured bool            `json:"configured"`
+			Policy     json.RawMessage `json:"policy"`
+		}
+		if json.Unmarshal(result.Body, &envelope) != nil {
+			response.Diagnostics.AddError("Invalid policy response", "Management API returned an invalid policy envelope.")
+			return
+		}
+		if !envelope.Configured {
+			response.State.RemoveResource(ctx)
+			return
+		}
+		var object map[string]json.RawMessage
+		if json.Unmarshal(envelope.Policy, &object) != nil || object == nil {
+			response.Diagnostics.AddError("Invalid policy response", "Management API returned no policy object.")
+			return
+		}
+		object["id"], _ = json.Marshal(model.ID.ValueString())
+		result.Body, _ = json.Marshal(object)
 	}
 	object, _, err := decodeResource(result)
 	if err != nil {
@@ -465,6 +512,9 @@ func (r *managedResource) ModifyPlan(ctx context.Context, request resource.Modif
 		if r.spec.parent != "" && planned.ParentID.IsUnknown() {
 			return
 		}
+		if r.spec.name == "routing_policy" {
+			planned.ID = planned.ParentID
+		}
 		if _, err := r.call(ctx, operation.Name, planned, nil); err != nil {
 			response.Diagnostics.AddError("Cannot plan resource creation", err.Error())
 		}
@@ -516,7 +566,7 @@ func (r *managedResource) ModifyPlan(ctx context.Context, request resource.Modif
 		response.Diagnostics.AddError("Cannot verify planned resource", err.Error())
 		return
 	}
-	if current.ETag != model.ETag.ValueString() {
+	if current.ETag != r.observedETag(model) {
 		response.Diagnostics.AddError("Resource changed while planning", "Refresh and review a new plan before applying. The observed resource ETag is stale.")
 	}
 }

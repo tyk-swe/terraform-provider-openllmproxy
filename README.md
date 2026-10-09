@@ -4,8 +4,8 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, providers, credential slots, routes, keys, budget groups, notification
-destinations and notification rules.
+projects, providers, credential slots, routes, routing policies, keys, budget
+groups, notification destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
 creation request. Mutable fields update through the declared API; changes to
@@ -133,3 +133,27 @@ Destroy retires the route while preserving its slug, revisions and accounting
 history. A retired slug cannot be reused by a new resource: restore or import its
 existing identity when intentional. Saved plans cannot overwrite a concurrent
 external publication.
+
+## Scoped routing policies
+
+`openllmproxy_routing_policy` takes `scope`, `scope_id`, and a JSON policy
+`definition`. Supported scopes are `installation` (nil UUID), `api-key`, and
+`route-draft`; their ordinary settings, key, or configuration permissions apply.
+Import uses `SCOPE/UUID`. Existing explicit policies must be imported before
+management; a default policy is not treated as an existing override.
+
+Policy updates replace the complete policy, so omitting a constraint resets it
+to the default. Destroy removes the explicit override and preserves a fresh
+conditional-write observation. Draft changes become live upon activation.
+The provider coordinates a key and its policy through proven writes from the
+same apply. External parent or policy changes still invalidate reviewed plans.
+
+```hcl
+resource "openllmproxy_routing_policy" "client" {
+  scope    = "api-key"
+  scope_id = openllmproxy_key.client.id
+  definition = jsonencode({
+    allowed_strategies = ["weighted"]
+  })
+}
+```
