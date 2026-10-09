@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
@@ -21,6 +22,7 @@ import (
 type resourceSpec struct {
 	name, create, read, update, destroy, parameter string
 	secret                                         bool
+	retiredField                                   string
 }
 type managedResource struct {
 	spec   resourceSpec
@@ -34,10 +36,11 @@ type resourceModel struct {
 
 func resourceFactories() []func() resource.Resource {
 	definitions := []resourceSpec{
-		{"project", "create_project", "get_project", "update_project", "delete_project", "project_id", false},
-		{"budget_group", "create_budget_group", "get_budget_group", "update_budget_group", "delete_budget_group", "budget_group_id", false},
-		{"notification_rule", "create_notification_rule", "get_notification_rule", "update_notification_rule", "delete_notification_rule", "notification_rule_id", false},
-		{"notification_destination", "create_notification_destination", "get_notification_destination", "update_notification_destination", "delete_notification_destination", "notification_destination_id", true},
+		{name: "project", create: "create_project", read: "get_project", update: "update_project", destroy: "delete_project", parameter: "project_id"},
+		{name: "budget_group", create: "create_budget_group", read: "get_budget_group", update: "update_budget_group", destroy: "delete_budget_group", parameter: "budget_group_id"},
+		{name: "notification_rule", create: "create_notification_rule", read: "get_notification_rule", update: "update_notification_rule", destroy: "delete_notification_rule", parameter: "notification_rule_id"},
+		{name: "notification_destination", create: "create_notification_destination", read: "get_notification_destination", update: "update_notification_destination", destroy: "delete_notification_destination", parameter: "notification_destination_id", secret: true},
+		{name: "key", create: "create_api_key", read: "get_api_key", update: "update_api_key", destroy: "revoke_api_key", parameter: "api_key_id", retiredField: "revoked_at"},
 	}
 	var factories []func() resource.Resource
 	for _, spec := range definitions {
@@ -58,6 +61,9 @@ func (r *managedResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 	if r.spec.secret {
 		response.Schema.Attributes["secret"] = schema.StringAttribute{Optional: true, WriteOnly: true, Sensitive: true, Description: "Webhook signing secret, never retained in plans or state. Increment secret_version when changing it. Use an ephemeral input."}
 		response.Schema.Attributes["secret_version"] = schema.Int64Attribute{Optional: true, Description: "Positive change counter for the write-only signing secret."}
+	}
+	if r.spec.name == "key" {
+		response.Schema.Attributes["secret_file"] = schema.StringAttribute{Optional: true, Description: "Absolute private destination for the one-time generated API key. Only this path enters state. Changes require replacement.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}}
 	}
 }
 
@@ -89,6 +95,13 @@ func (r *managedResource) ValidateConfig(ctx context.Context, request resource.V
 	if !definition.IsNull() && !definition.IsUnknown() {
 		if _, err := requestDefinition(resourceModel{Definition: definition}); err != nil {
 			response.Diagnostics.AddAttributeError(path.Root("definition"), "Invalid definition", err.Error())
+		}
+	}
+	if r.spec.name == "key" {
+		var destination types.String
+		response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("secret_file"), &destination)...)
+		if !destination.IsNull() && !destination.IsUnknown() && !filepath.IsAbs(destination.ValueString()) {
+			response.Diagnostics.AddAttributeError(path.Root("secret_file"), "Invalid secret destination", "Use an absolute private file path.")
 		}
 	}
 	if !r.spec.secret {
@@ -189,6 +202,7 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 		response.Diagnostics.AddError("Resource creation failed", err.Error())
 		return
 	}
+	defer clear(result.Body)
 	_, id, err := decodeResource(result)
 	if err != nil {
 		response.Diagnostics.AddError("Invalid creation response", err.Error())
@@ -198,6 +212,11 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 	model.ID = types.StringValue(id)
 	model.ETag = types.StringValue(result.ETag)
 	response.Diagnostics.Append(writeModel(ctx, &response.State, model)...)
+	if r.spec.name == "key" {
+		if err = r.captureKey(ctx, request.Config, result.Body); err != nil {
+			response.Diagnostics.AddError("Cannot capture API key", err.Error())
+		}
+	}
 }
 func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
 	var model resourceModel
@@ -219,6 +238,18 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 	if err != nil {
 		response.Diagnostics.AddError("Invalid read response", err.Error())
 		return
+	}
+	if r.spec.retiredField != "" {
+		if value, present := object[r.spec.retiredField]; present && string(value) != "null" {
+			response.State.RemoveResource(ctx)
+			return
+		}
+	}
+	if r.spec.name == "key" {
+		if err = flattenKeyBudgets(object); err != nil {
+			response.Diagnostics.AddError("Invalid key budget response", err.Error())
+			return
+		}
 	}
 	var selected map[string]json.RawMessage
 	if !model.Definition.IsNull() && !model.Definition.IsUnknown() {

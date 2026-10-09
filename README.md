@@ -4,7 +4,7 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, budget groups, notification destinations and notification rules.
+projects, keys, budget groups, notification destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
 creation request. Mutable fields update through the declared API; changes to
@@ -88,3 +88,13 @@ import and destroy, verify concurrent-edit refusal, and check that ephemeral
 signing values never enter saved plans or state. Missing service configuration
 fails explicitly. CI builds OLP from the same immutable module version used by
 the generated SDK and runs these checks against disposable services.
+
+API keys use `openllmproxy_key`. The provider keeps editable ceilings distinct
+from accrued spend and revokes keys on destroy so retained accounting stays
+intact. An optional absolute `secret_file` atomically captures the generated
+one-time key in a 0600 file; only the destination path enters state. The
+provider records the created identity before reporting an output error, allowing
+a failed capture to be reconciled or destroyed. Changing the destination
+requires replacement. Import cannot recover a one-time key: omit `secret_file`
+when adopting an existing key. Revocation leaves the output file in place for
+the operator to remove; its credential is then unusable.

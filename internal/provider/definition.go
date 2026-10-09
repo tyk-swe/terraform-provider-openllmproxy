@@ -109,6 +109,11 @@ func updateDefinition(operation management.Operation, definition, prior json.Raw
 			fields[name] = json.RawMessage("null")
 		} else if len(property.Default) > 0 {
 			fields[name] = property.Default
+		} else if value := bytes.TrimSpace(previous[name]); bytes.Equal(value, []byte("{}")) || bytes.Equal(value, []byte("[]")) || bytes.Equal(value, []byte("false")) {
+			// Imports include empty optional policy collections/flags. Keeping
+			// an already empty value is safe under the observed ETag; it does
+			// not silently retain a configured restriction that was removed.
+			continue
 		} else {
 			return nil, errors.New("removed field " + name + " requires an explicit desired value")
 		}
