@@ -1,0 +1,65 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: |
+          test -z "$(gofmt -l main.go internal tests)"
+          go vet ./...
+          go test -race -count=1 ./...
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: olp
+          POSTGRES_PASSWORD: acceptance-fixture
+          POSTGRES_DB: olp
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U olp -d olp"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the provider and its pinned OLP installation
+        run: |
+          mkdir -p .local/plugin .local/bin
+          go mod download
+          go build -o .local/plugin/terraform-provider-openllmproxy .
+          olp_source=$(go list -m -f '{{.Dir}}' github.com/tyk-swe/olp)
+          go -C "$olp_source" build -mod=readonly -o "$GITHUB_WORKSPACE/.local/bin/olp" ./cmd/olp
+      - name: Install verified Terraform and OpenTofu binaries
+        run: ./scripts/install-tools.sh
+      - name: Start authenticated disposable Valkey
+        run: |
+          docker run -d --rm --name acceptance-valkey -p 127.0.0.1:6379:6379 valkey/valkey:9 valkey-server --requirepass acceptance-fixture
+      - name: Qualify every resource with both engines
+        env:
+          OLP_TEST_DATABASE_URL: postgres://olp:acceptance-fixture@127.0.0.1:5432/olp?sslmode=disable
+          OLP_TEST_VALKEY_URL: redis://:acceptance-fixture@127.0.0.1:6379/0
+        run: |
+          export OLP_TEST_BINARY="$GITHUB_WORKSPACE/.local/bin/olp"
+          export OLP_TEST_PROVIDER_BINARY="$GITHUB_WORKSPACE/.local/plugin/terraform-provider-openllmproxy"
+          export OLP_TEST_TERRAFORM_BINARY="$GITHUB_WORKSPACE/.local/tools/terraform"
+          export OLP_TEST_TOFU_BINARY="$GITHUB_WORKSPACE/.local/tools/tofu"
+          go test -race -count=1 -tags=integration -timeout=15m -v ./tests/acceptance
+      - if: always()
+        run: docker rm -f acceptance-valkey || true
