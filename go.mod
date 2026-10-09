@@ -3,10 +3,11 @@ module github.com/tyk-swe/terraform-provider-openllmproxy
 go 1.27.1
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-framework-jsontypes v0.2.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/tyk-swe/olp v0.0.0-20261009210920-54a73a4e6b15
+	github.com/tyk-swe/olp v0.0.0-20261009221851-2fb946a10e16
 )
 
 require (

@@ -28,7 +28,7 @@ func importDefinition(operation management.Operation, object map[string]json.Raw
 	}
 	result := map[string]json.RawMessage{}
 	for name, property := range body.Properties {
-		if property.WriteOnly || name == "secret" || name == "credential" {
+		if property.WriteOnly || name == "id" || name == "etag" || name == "secret" || name == "credential" {
 			continue
 		}
 		if value, exists := object[name]; exists && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {

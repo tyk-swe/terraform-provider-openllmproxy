@@ -20,18 +20,20 @@ import (
 )
 
 type resourceSpec struct {
-	name, create, read, update, destroy, parameter string
-	secret                                         bool
-	retiredField                                   string
+	name, create, read, update, destroy, parameter     string
+	secret                                             bool
+	secretField, rotate, parent, bodyField, collection string
+	retiredField                                       string
 }
 type managedResource struct {
 	spec   resourceSpec
-	client *management.Client
+	client *managementConnection
 }
 type resourceModel struct {
 	ID         types.String         `tfsdk:"id"`
 	Definition jsontypes.Normalized `tfsdk:"definition"`
 	ETag       types.String         `tfsdk:"etag"`
+	ParentID   types.String
 }
 
 func resourceFactories() []func() resource.Resource {
@@ -40,6 +42,8 @@ func resourceFactories() []func() resource.Resource {
 		{name: "budget_group", create: "create_budget_group", read: "get_budget_group", update: "update_budget_group", destroy: "delete_budget_group", parameter: "budget_group_id"},
 		{name: "notification_rule", create: "create_notification_rule", read: "get_notification_rule", update: "update_notification_rule", destroy: "delete_notification_rule", parameter: "notification_rule_id"},
 		{name: "notification_destination", create: "create_notification_destination", read: "get_notification_destination", update: "update_notification_destination", destroy: "delete_notification_destination", parameter: "notification_destination_id", secret: true},
+		{name: "provider", create: "create_provider", read: "get_provider", update: "update_provider", destroy: "delete_provider", parameter: "provider_id", secret: true, secretField: "credential", rotate: "rotate_provider_credential"},
+		{name: "credential_slot", create: "put_credential_slot", read: "get_credential_slot", update: "put_credential_slot", destroy: "delete_credential_slot", parameter: "slot_id", secret: true, secretField: "credential", parent: "provider_id", bodyField: "slot", collection: "credential_slots"},
 		{name: "key", create: "create_api_key", read: "get_api_key", update: "update_api_key", destroy: "revoke_api_key", parameter: "api_key_id", retiredField: "revoked_at"},
 	}
 	var factories []func() resource.Resource
@@ -59,8 +63,11 @@ func (r *managedResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		"definition": schema.StringAttribute{Required: true, CustomType: jsontypes.NormalizedType{}},
 	}}
 	if r.spec.secret {
-		response.Schema.Attributes["secret"] = schema.StringAttribute{Optional: true, WriteOnly: true, Sensitive: true, Description: "Webhook signing secret, never retained in plans or state. Increment secret_version when changing it. Use an ephemeral input."}
-		response.Schema.Attributes["secret_version"] = schema.Int64Attribute{Optional: true, Description: "Positive change counter for the write-only signing secret."}
+		response.Schema.Attributes["secret"] = schema.StringAttribute{Optional: true, WriteOnly: true, Sensitive: true, Description: "Write-only secret, never retained in plans or state. Increment secret_version when changing it. Use an ephemeral input."}
+		response.Schema.Attributes["secret_version"] = schema.Int64Attribute{Optional: true, Description: "Positive change counter for the write-only secret."}
+	}
+	if r.spec.parent != "" {
+		response.Schema.Attributes[r.spec.parent] = schema.StringAttribute{Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Description: "Owning provider UUID. Changing it replaces the credential slot."}
 	}
 	if r.spec.name == "key" {
 		response.Schema.Attributes["secret_file"] = schema.StringAttribute{Optional: true, Description: "Absolute private destination for the one-time generated API key. Only this path enters state. Changes require replacement.", PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}}
@@ -111,7 +118,10 @@ func (r *managedResource) ValidateConfig(ctx context.Context, request resource.V
 	var version types.Int64
 	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("secret"), &secret)...)
 	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("secret_version"), &version)...)
-	if !secret.IsNull() && !secret.IsUnknown() && (version.IsNull() || (!version.IsUnknown() && version.ValueInt64() < 1)) {
+	if !version.IsNull() && !version.IsUnknown() && version.ValueInt64() < 1 {
+		response.Diagnostics.AddAttributeError(path.Root("secret_version"), "Invalid secret version", "Use a positive change counter.")
+	}
+	if !secret.IsNull() && !secret.IsUnknown() && version.IsNull() {
 		response.Diagnostics.AddAttributeError(path.Root("secret_version"), "Missing secret version", "Supply a positive secret_version with a write-only secret.")
 	}
 }
@@ -131,7 +141,11 @@ func (r *managedResource) withSecret(ctx context.Context, config attributeReader
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, errors.New("invalid resource definition")
 	}
-	fields["secret"], _ = json.Marshal(secret.ValueString())
+	field := r.spec.secretField
+	if field == "" {
+		field = "secret"
+	}
+	fields[field], _ = json.Marshal(secret.ValueString())
 	return json.Marshal(fields)
 }
 func (r *managedResource) Configure(_ context.Context, request resource.ConfigureRequest, response *resource.ConfigureResponse) {
@@ -139,7 +153,7 @@ func (r *managedResource) Configure(_ context.Context, request resource.Configur
 		return
 	}
 	var ok bool
-	r.client, ok = request.ProviderData.(*management.Client)
+	r.client, ok = request.ProviderData.(*managementConnection)
 	if !ok {
 		response.Diagnostics.AddError("Invalid management client", "Provider configuration did not supply a management client.")
 	}
@@ -151,10 +165,28 @@ func (r *managedResource) call(ctx context.Context, name string, model resourceM
 		return management.Response{}, fmt.Errorf("management operation %s is unavailable in the generated contract", name)
 	}
 	args := management.Arguments{Body: body, IfMatch: model.ETag.ValueString()}
-	if len(operation.Parameters) > 0 && !model.ID.IsNull() && !model.ID.IsUnknown() {
-		args.Path = map[string]string{r.spec.parameter: model.ID.ValueString()}
+	if len(operation.Parameters) > 0 {
+		args.Path = map[string]string{}
+		for _, parameter := range operation.Parameters {
+			if parameter.In != "path" {
+				continue
+			}
+			if parameter.Name == r.spec.parameter {
+				args.Path[parameter.Name] = model.ID.ValueString()
+			}
+			if parameter.Name == r.spec.parent {
+				args.Path[parameter.Name] = model.ParentID.ValueString()
+			}
+		}
 	}
-	return r.client.Call(ctx, operation, args)
+	if r.spec.name == "provider" && (name == r.spec.update || name == r.spec.destroy) {
+		args.IfMatch = r.client.advanceParent(model.ID.ValueString(), args.IfMatch)
+	}
+	result, err := r.client.Call(ctx, operation, args)
+	if err == nil && r.spec.parent != "" {
+		r.client.observeParent(model.ParentID.ValueString(), result.PreviousParentETag, result.ParentETag)
+	}
+	return result, err
 }
 func requestDefinition(model resourceModel) (json.RawMessage, error) {
 	var object map[string]json.RawMessage
@@ -182,7 +214,7 @@ func decodeResource(result management.Response) (map[string]json.RawMessage, str
 
 func (r *managedResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var model resourceModel
-	response.Diagnostics.Append(readModel(ctx, request.Plan, &model)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.Plan, &model)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -191,12 +223,18 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 		response.Diagnostics.AddError("Invalid definition", err.Error())
 		return
 	}
-	body, err = r.withSecret(ctx, request.Config, body)
+	body, err = r.prepareBody(ctx, request.Config, body, true)
 	if err != nil {
 		response.Diagnostics.AddError("Invalid write-only secret", err.Error())
 		return
 	}
 	defer clear(body)
+	if r.spec.parent != "" {
+		if !r.createChild(ctx, request, response, model, body) {
+			return
+		}
+		return
+	}
 	result, err := r.call(ctx, r.spec.create, model, body)
 	if err != nil {
 		response.Diagnostics.AddError("Resource creation failed", err.Error())
@@ -211,7 +249,7 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 	response.State.Raw = request.Plan.Raw
 	model.ID = types.StringValue(id)
 	model.ETag = types.StringValue(result.ETag)
-	response.Diagnostics.Append(writeModel(ctx, &response.State, model)...)
+	response.Diagnostics.Append(r.writeModel(ctx, &response.State, model)...)
 	if r.spec.name == "key" {
 		if err = r.captureKey(ctx, request.Config, result.Body); err != nil {
 			response.Diagnostics.AddError("Cannot capture API key", err.Error())
@@ -220,7 +258,7 @@ func (r *managedResource) Create(ctx context.Context, request resource.CreateReq
 }
 func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
 	var model resourceModel
-	response.Diagnostics.Append(readModel(ctx, request.State, &model)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.State, &model)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -251,6 +289,12 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 			return
 		}
 	}
+	if r.spec.name == "provider" || r.spec.parent != "" {
+		if err = r.credentialReference(ctx, model, object); err != nil {
+			response.Diagnostics.AddError("Cannot read credential reference", err.Error())
+			return
+		}
+	}
 	var selected map[string]json.RawMessage
 	if !model.Definition.IsNull() && !model.Definition.IsUnknown() {
 		if json.Unmarshal([]byte(model.Definition.ValueString()), &selected) != nil {
@@ -259,7 +303,7 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 		}
 	} else {
 		operation, _ := management.Lookup(r.spec.create)
-		selected, err = importDefinition(operation, object)
+		selected, err = r.importDefinition(operation, object)
 		if err != nil {
 			response.Diagnostics.AddError("Cannot import resource definition", err.Error())
 			return
@@ -267,23 +311,33 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 	}
 	for name := range selected {
 		value, exists := object[name]
+		if r.spec.name == "provider" && (name == "model" || name == "display_name") {
+			// Seeding is a creation intent; inventory is managed independently.
+			continue
+		}
 		if !exists {
 			response.Diagnostics.AddError("Incomplete read response", "Management response omitted a configured field.")
 			return
 		}
-		if !equivalentValue(name, selected[name], value) {
-			selected[name] = value
+		if r.spec.parent != "" && name == "credential_version_id" && string(selected[name]) == "null" {
+			continue
 		}
+		next, projectionErr := projectConfigured(name, selected[name], value)
+		if projectionErr != nil {
+			response.Diagnostics.AddError("Incomplete read response", projectionErr.Error())
+			return
+		}
+		selected[name] = next
 	}
 	encoded, _ := json.Marshal(selected)
 	model.Definition = jsontypes.NewNormalizedValue(string(encoded))
 	model.ETag = types.StringValue(result.ETag)
-	response.Diagnostics.Append(writeModel(ctx, &response.State, model)...)
+	response.Diagnostics.Append(r.writeModel(ctx, &response.State, model)...)
 }
 func (r *managedResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var model, prior resourceModel
-	response.Diagnostics.Append(readModel(ctx, request.Plan, &model)...)
-	response.Diagnostics.Append(readModel(ctx, request.State, &prior)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.Plan, &model)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.State, &prior)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -295,12 +349,30 @@ func (r *managedResource) Update(ctx context.Context, request resource.UpdateReq
 		return
 	}
 	operation, _ := management.Lookup(r.spec.update)
-	body, err = updateDefinition(operation, body, json.RawMessage(prior.Definition.ValueString()))
+	body, err = r.updateDefinition(operation, body, json.RawMessage(prior.Definition.ValueString()))
 	if err != nil {
 		response.Diagnostics.AddError("Invalid update definition", err.Error())
 		return
 	}
-	body, err = r.withSecret(ctx, request.Config, body)
+	changed := false
+	if r.spec.secret {
+		var diagnostics diag.Diagnostics
+		changed, diagnostics = secretChanged(ctx, request.Plan, request.State)
+		response.Diagnostics.Append(diagnostics...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+	}
+	if r.spec.bodyField != "" {
+		var fields, old map[string]json.RawMessage
+		json.Unmarshal(body, &fields)
+		json.Unmarshal([]byte(prior.Definition.ValueString()), &old)
+		if sameJSON(fields["credential_reference"], old["credential_reference"]) {
+			delete(fields, "credential_reference")
+		}
+		body, _ = json.Marshal(fields)
+	}
+	body, err = r.prepareBody(ctx, request.Config, body, changed && r.spec.rotate == "")
 	if err != nil {
 		response.Diagnostics.AddError("Invalid write-only secret", err.Error())
 		return
@@ -311,13 +383,31 @@ func (r *managedResource) Update(ctx context.Context, request resource.UpdateReq
 		response.Diagnostics.AddError("Resource update failed", err.Error())
 		return
 	}
+	if r.spec.parent != "" {
+		// Slot PUT returns the pool; refresh the committed slot's own ETag.
+		response.State.Raw = request.Plan.Raw
+		response.Diagnostics.Append(r.writeModel(ctx, &response.State, model)...)
+		result, err = r.call(ctx, r.spec.read, model, nil)
+		if err != nil {
+			response.Diagnostics.AddError("Cannot refresh committed slot", err.Error())
+			return
+		}
+	}
 	response.State.Raw = request.Plan.Raw
 	model.ETag = types.StringValue(result.ETag)
-	response.Diagnostics.Append(writeModel(ctx, &response.State, model)...)
+	response.Diagnostics.Append(r.writeModel(ctx, &response.State, model)...)
+	if changed && r.spec.rotate != "" {
+		// Validate a replacement against the newly committed draft configuration.
+		// If validation fails, retain that configuration and the prior counter.
+		response.Diagnostics.Append(setSecretVersion(ctx, request.State, &response.State)...)
+		if !response.Diagnostics.HasError() {
+			r.rotateSecret(ctx, request, response, &model)
+		}
+	}
 }
 func (r *managedResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	var model resourceModel
-	response.Diagnostics.Append(readModel(ctx, request.State, &model)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.State, &model)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -328,6 +418,10 @@ func (r *managedResource) Delete(ctx context.Context, request resource.DeleteReq
 	}
 }
 func (r *managedResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
+	if r.spec.parent != "" {
+		r.importChild(ctx, request, response)
+		return
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 }
 
@@ -341,30 +435,41 @@ func (r *managedResource) ModifyPlan(ctx context.Context, request resource.Modif
 		}
 		// New-resource plans check the live collection's read authority without
 		// acquiring installation-wide configuration-promotion permissions.
-		name := "list_" + strings.TrimPrefix(r.spec.create, "create_") + "s"
+		name := r.spec.collection
+		if name == "" {
+			name = "list_" + strings.TrimPrefix(r.spec.create, "create_") + "s"
+		}
 		operation, exists := management.Lookup(name)
 		if !exists {
 			response.Diagnostics.AddError("Cannot validate resource collection", "Generated contract has no collection read for this resource.")
 			return
 		}
-		if _, err := r.client.Call(ctx, operation, management.Arguments{}); err != nil {
+		var planned resourceModel
+		response.Diagnostics.Append(r.readModel(ctx, request.Plan, &planned)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		if r.spec.parent != "" && planned.ParentID.IsUnknown() {
+			return
+		}
+		if _, err := r.call(ctx, operation.Name, planned, nil); err != nil {
 			response.Diagnostics.AddError("Cannot plan resource creation", err.Error())
 		}
 		return
 	}
 	var model resourceModel
-	response.Diagnostics.Append(readModel(ctx, request.State, &model)...)
+	response.Diagnostics.Append(r.readModel(ctx, request.State, &model)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
 	if !request.Plan.Raw.IsNull() {
 		var planned resourceModel
-		response.Diagnostics.Append(readModel(ctx, request.Plan, &planned)...)
+		response.Diagnostics.Append(r.readModel(ctx, request.Plan, &planned)...)
 		if response.Diagnostics.HasError() {
 			return
 		}
 		operation, _ := management.Lookup(r.spec.update)
-		body, err := bodySchema(operation)
+		body, err := r.bodySchema(operation)
 		if err != nil {
 			response.Diagnostics.AddError("Invalid update contract", err.Error())
 			return

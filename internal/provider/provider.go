@@ -55,7 +55,7 @@ func (p *managementProvider) Configure(ctx context.Context, request provider.Con
 		response.Diagnostics.AddError("Invalid installation connection", err.Error())
 		return
 	}
-	response.ResourceData = client
+	response.ResourceData = &managementConnection{Client: client}
 }
 func (p *managementProvider) Resources(_ context.Context) []func() resource.Resource {
 	return resourceFactories()

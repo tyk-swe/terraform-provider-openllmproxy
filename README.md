@@ -4,7 +4,8 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, keys, budget groups, notification destinations and notification rules.
+projects, providers, credential slots, keys, budget groups, notification
+destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
 creation request. Mutable fields update through the declared API; changes to
@@ -26,7 +27,7 @@ installation-wide `manage_projects` token whose creator remains an owner;
 budget and notification administration use the corresponding `keys` or
 installation `settings` scopes.
 
-Credential values are rejected from `definition`. Notification signing secrets
+Credential values are rejected from `definition`. Provider, slot and notification secrets
 use the separate `secret` write-only attribute and a positive `secret_version`
 change counter. Supply the value through an ephemeral variable, and increment
 the counter when rotating it. Terraform 1.11+ and OpenTofu 1.11+ support this
@@ -98,3 +99,27 @@ a failed capture to be reconciled or destroyed. Changing the destination
 requires replacement. Import cannot recover a one-time key: omit `secret_file`
 when adopting an existing key. Revocation leaves the output file in place for
 the operator to remove; its credential is then unusable.
+
+## Providers and credential slots
+
+`openllmproxy_provider` manages the draft configuration. Use the write-only
+`secret` and `secret_version` for its credential; incrementing the counter
+validates a new immutable version against the committed draft configuration.
+A failed validation retains committed configuration and the previous successful
+counter so the next plan can reconcile the partial result. Optional `model` and
+`display_name` seed inventory at creation and are omitted when importing an
+existing provider. Normalized defaults do not add fields to your definition.
+
+`openllmproxy_credential_slot` requires `provider_id` and accepts the slot's own
+fields as its definition, with a separate write-only secret. New slots use an
+observed collection ETag; existing slots use independent ETags, so sibling
+updates do not conflict. Import uses `PROVIDER_UUID/SLOT_UUID`. A pinned
+`credential_reference` may replace plaintext in either definition. References
+are public metadata; resolved values never enter state.
+
+Deleting a nondefault draft slot preserves its immutable credential versions
+and published bindings. An unused draft provider can be deleted; publication,
+route references, provider-specific prices and retained history cause conflicts.
+Dependent slot deletions report atomic parent transitions. The client follows
+only a contiguous chain of its own writes when deleting the provider; an
+intervening external edit remains a conflict, including for a saved destroy plan.

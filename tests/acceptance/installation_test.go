@@ -53,7 +53,7 @@ func address(t *testing.T) string {
 
 // Each test owns a fresh database, encryption/authentication keys and process;
 // only the disposable PostgreSQL/Valkey services are shared.
-func newInstallation(t *testing.T) installation {
+func newInstallation(t *testing.T, environment ...string) installation {
 	t.Helper()
 	raw := required(t, "OLP_TEST_DATABASE_URL")
 	admin, err := pgx.Connect(t.Context(), raw)
@@ -92,6 +92,7 @@ func newInstallation(t *testing.T) installation {
 	bootFile := privateFile(t, dir, "bootstrap.token", bootstrap)
 	endpoint := "http://" + address(t)
 	env := append(os.Environ(), "OLP_DATABASE_URL="+databaseURL.String(), "OLP_VALKEY_URL="+required(t, "OLP_TEST_VALKEY_URL"), "OLP_AUTH_HMAC_KEY_FILE="+auth, "OLP_MASTER_KEY_FILE="+master, "OLP_BOOTSTRAP_TOKEN_FILE="+bootFile, "OLP_LISTEN_ADDR="+strings.TrimPrefix(endpoint, "http://"), "OLP_OBSERVABILITY_LISTEN_ADDR="+address(t), "OLP_PUBLIC_ORIGIN="+endpoint, "OLP_DATABASE_MAX_CONNECTIONS=5")
+	env = append(env, environment...)
 	binary := required(t, "OLP_TEST_BINARY")
 	migrate := exec.CommandContext(t.Context(), binary, "migrate")
 	migrate.Env = env
