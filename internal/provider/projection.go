@@ -9,6 +9,21 @@ import (
 // defaults must not create an endless diff, while changes to chosen facts are
 // still reflected in refreshed state.
 func projectConfigured(name string, configured, observed json.RawMessage) (json.RawMessage, error) {
+	var sequence []json.RawMessage
+	if json.Unmarshal(configured, &sequence) == nil && sequence != nil {
+		var actual []json.RawMessage
+		if json.Unmarshal(observed, &actual) != nil || len(actual) != len(sequence) {
+			return observed, nil
+		}
+		for index, previous := range sequence {
+			next, err := projectConfigured(name, previous, actual[index])
+			if err != nil {
+				return nil, err
+			}
+			sequence[index] = next
+		}
+		return json.Marshal(sequence)
+	}
 	var desired map[string]json.RawMessage
 	if json.Unmarshal(configured, &desired) == nil && desired != nil {
 		var actual map[string]json.RawMessage

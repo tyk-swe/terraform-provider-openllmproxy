@@ -44,6 +44,7 @@ func resourceFactories() []func() resource.Resource {
 		{name: "notification_destination", create: "create_notification_destination", read: "get_notification_destination", update: "update_notification_destination", destroy: "delete_notification_destination", parameter: "notification_destination_id", secret: true},
 		{name: "provider", create: "create_provider", read: "get_provider", update: "update_provider", destroy: "delete_provider", parameter: "provider_id", secret: true, secretField: "credential", rotate: "rotate_provider_credential"},
 		{name: "credential_slot", create: "put_credential_slot", read: "get_credential_slot", update: "put_credential_slot", destroy: "delete_credential_slot", parameter: "slot_id", secret: true, secretField: "credential", parent: "provider_id", bodyField: "slot", collection: "credential_slots"},
+		{name: "route", create: "create_route", read: "get_route", update: "update_route", destroy: "retire_route", parameter: "route_id", retiredField: "retired_at"},
 		{name: "key", create: "create_api_key", read: "get_api_key", update: "update_api_key", destroy: "revoke_api_key", parameter: "api_key_id", retiredField: "revoked_at"},
 	}
 	var factories []func() resource.Resource
@@ -283,6 +284,12 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 			return
 		}
 	}
+	if r.spec.name == "route" {
+		if err = flattenRoute(object); err != nil {
+			response.Diagnostics.AddError("Invalid route revision response", err.Error())
+			return
+		}
+	}
 	if r.spec.name == "key" {
 		if err = flattenKeyBudgets(object); err != nil {
 			response.Diagnostics.AddError("Invalid key budget response", err.Error())
@@ -328,6 +335,12 @@ func (r *managedResource) Read(ctx context.Context, request resource.ReadRequest
 			return
 		}
 		selected[name] = next
+	}
+	if r.spec.name == "route" && (model.Definition.IsNull() || model.Definition.IsUnknown()) {
+		if err = canonicalRouteTargets(selected); err != nil {
+			response.Diagnostics.AddError("Invalid imported targets", err.Error())
+			return
+		}
 	}
 	encoded, _ := json.Marshal(selected)
 	model.Definition = jsontypes.NewNormalizedValue(string(encoded))
@@ -476,16 +489,22 @@ func (r *managedResource) ModifyPlan(ctx context.Context, request resource.Modif
 		}
 		var previous, next map[string]json.RawMessage
 		if json.Unmarshal([]byte(model.Definition.ValueString()), &previous) == nil && !planned.Definition.IsUnknown() && json.Unmarshal([]byte(planned.Definition.ValueString()), &next) == nil {
+			if r.spec.name == "route" {
+				if err := validateRouteReplacement(previous, next); err != nil {
+					response.Diagnostics.AddError("Invalid route replacement", err.Error())
+					return
+				}
+			}
 			for field := range previous {
 				if _, present := next[field]; !present {
-					if _, mutable := body.Properties[field]; !mutable {
+					if _, mutable := body.Properties[field]; !mutable || (r.spec.name == "route" && field == "slug") {
 						response.RequiresReplace = append(response.RequiresReplace, path.Root("definition"))
 						break
 					}
 				}
 			}
 			for field, value := range next {
-				if _, mutable := body.Properties[field]; !mutable && !equivalentValue(field, previous[field], value) {
+				if _, mutable := body.Properties[field]; (!mutable || (r.spec.name == "route" && field == "slug")) && !equivalentValue(field, previous[field], value) {
 					response.RequiresReplace = append(response.RequiresReplace, path.Root("definition"))
 					break
 				}

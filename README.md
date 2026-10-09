@@ -4,7 +4,7 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, providers, credential slots, keys, budget groups, notification
+projects, providers, credential slots, routes, keys, budget groups, notification
 destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
@@ -123,3 +123,13 @@ route references, provider-specific prices and retained history cause conflicts.
 Dependent slot deletions report atomic parent transitions. The client follows
 only a contiguous chain of its own writes when deleting the provider; an
 intervening external edit remains a conflict, including for a saved destroy plan.
+
+`openllmproxy_route` manages published routes. Create and replacement validate a
+fresh source draft and publish an immutable revision in one transaction;
+independent console drafts and the current routing policy remain intact. Targets
+retain only selected facts in state. Import uses the route UUID and canonical
+provider-model IDs. The slug is immutable; changing it requires replacement.
+Destroy retires the route while preserving its slug, revisions and accounting
+history. A retired slug cannot be reused by a new resource: restore or import its
+existing identity when intentional. Saved plans cannot overwrite a concurrent
+external publication.

@@ -7,7 +7,7 @@ require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-framework-jsontypes v0.2.0
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/tyk-swe/olp v0.0.0-20261009221851-2fb946a10e16
+	github.com/tyk-swe/olp v0.0.0-20261009223728-8574641fe79b
 )
 
 require (
