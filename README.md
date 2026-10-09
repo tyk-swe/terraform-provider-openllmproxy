@@ -4,8 +4,8 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, providers, credential slots, routes, routing policies, keys, budget
-groups, notification destinations and notification rules.
+projects, providers, credential slots, routes, routing policies, guardrails, keys,
+budget groups, notification destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
 creation request. Mutable fields update through the declared API; changes to
@@ -157,3 +157,18 @@ resource "openllmproxy_routing_policy" "client" {
   })
 }
 ```
+
+## Named guardrails
+
+`openllmproxy_guardrail` accepts a project UUID, name, `builtin.regex` type and
+bounded content-policy object in its JSON `definition`. Updates append immutable
+policy revisions and require the observed ETag; import uses the guardrail UUID.
+Destroy retires the active definition and retains policy history, including its
+project boundary. `read`/`configure` authority remains project-scoped.
+
+Use `jsondecode(openllmproxy_guardrail.filter.definition).policy` as a route's
+`content_policy` inside `jsonencode`. Terraform then reviews and publishes a
+selected copy through the route's ordinary conditional API. Existing route
+revisions retain their copies when a named definition changes or retires.
+A saved plan refuses an external definition edit before changing the dependent
+route. Retained history can prevent deletion of the owning project.
