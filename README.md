@@ -194,7 +194,7 @@ identity and history remain. Retained project-owned sinks can prevent project
 deletion. Saved plans refuse external edits. Configuration promotion moves only
 logical definitions and separately supplied destination signing bindings, not
 queued events, counters or local secret values. See the gateway's
-[export sink guide](https://github.com/tyk-swe/olp/blob/tyk/m11-operator-ecosystem/docs/export-sinks.md).
+[export sink guide](https://github.com/tyk-swe/olp/blob/6861b35683449193f03189c28080f2b09453d03c/docs/export-sinks.md).
 
 ## Certified upstream MCP servers
 
@@ -211,4 +211,4 @@ reviewed update; a foreign registration change invalidates a saved plan. Destroy
 retires the registration and removes authentication material while preserving
 old catalogs and the project boundary. The management resource certifies catalogs
 without invoking upstream tools. See the gateway's
-[registration guide](https://github.com/tyk-swe/olp/blob/tyk/m11-operator-ecosystem/docs/mcp-servers.md).
+[registration guide](https://github.com/tyk-swe/olp/blob/6861b35683449193f03189c28080f2b09453d03c/docs/mcp-servers.md).
