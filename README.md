@@ -4,7 +4,7 @@ A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
 files, current caller authority and observed resource ETags. The M11 provider
 implementation is in progress; the qualified resource set currently includes
-projects, providers, credential slots, routes, routing policies, guardrails, keys,
+projects, providers, credential slots, routes, routing policies, guardrails, export sinks, keys,
 budget groups, notification destinations and notification rules.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
@@ -27,7 +27,7 @@ installation-wide `manage_projects` token whose creator remains an owner;
 budget and notification administration use the corresponding `keys` or
 installation `settings` scopes.
 
-Credential values are rejected from `definition`. Provider, slot and notification secrets
+Credential values are rejected from `definition`. Provider, slot, sink and notification secrets
 use the separate `secret` write-only attribute and a positive `secret_version`
 change counter. Supply the value through an ephemeral variable, and increment
 the counter when rotating it. Terraform 1.11+ and OpenTofu 1.11+ support this
@@ -172,3 +172,27 @@ selected copy through the route's ordinary conditional API. Existing route
 revisions retain their copies when a named definition changes or retires.
 A saved plan refuses an external definition edit before changing the dependent
 route. Retained history can prevent deletion of the owning project.
+
+## Content-free export sinks
+
+`openllmproxy_sink` manages an installation or project HTTPS JSON destination
+with a conditional UUID/ETag lifecycle. Its definition selects name, `type =
+"https"`, destination, streams, enabled state and optional project UUID. Supported
+streams are requests, attempts, guardrail_decisions and installation-only audit.
+Project writes require keys/project-change authority; installation writes require
+settings. Endpoint validation and every dial use provider egress policy.
+
+Use the sensitive write-only `secret` attribute and increment `secret_version`
+when replacing HMAC signing bytes. Ephemeral inputs keep values out of saved
+plans and state, including their JSON representations. UUID imports reconstruct
+nonsecret definitions; credential values cannot be imported. The installation's
+worker sends durable, content-free events with stable IDs, exact-byte signatures,
+bounded retries and expiry-gap counts. Delivery counters never alter the resource
+ETag or definition.
+
+Destroy retires the sink, cancels pending work and removes signing material;
+identity and history remain. Retained project-owned sinks can prevent project
+deletion. Saved plans refuse external edits. Configuration promotion moves only
+logical definitions and separately supplied destination signing bindings, not
+queued events, counters or local secret values. See the gateway's
+[export sink guide](https://github.com/tyk-swe/olp/blob/tyk/m11-operator-ecosystem/docs/export-sinks.md).

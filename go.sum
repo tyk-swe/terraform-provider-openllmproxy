@@ -70,8 +70,8 @@ github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/
 github.com/stretchr/testify v1.7.2/go.mod h1:R6va5+xMeoiuVRoj+gSkQ7d3FALtqAAGI1FQKckRals=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/tyk-swe/olp v0.0.0-20261009231900-1e5f2c8d7ec2 h1:DfRIWbddKroH0Df0fvY6se1NqnCTtt39zyYTL1ijFho=
-github.com/tyk-swe/olp v0.0.0-20261009231900-1e5f2c8d7ec2/go.mod h1:G62q6kfTPeUrPKgstiN8thfoVFRBCQKpJ8XTovOFadk=
+github.com/tyk-swe/olp v0.0.0-20261009235540-b832870a83b7 h1:cuSh2OXNpHFDhcDictKgMxhiE7QIsG9EdkwNR/IR5FA=
+github.com/tyk-swe/olp v0.0.0-20261009235540-b832870a83b7/go.mod h1:G62q6kfTPeUrPKgstiN8thfoVFRBCQKpJ8XTovOFadk=
 github.com/vmihailenco/msgpack/v5 v5.4.1 h1:cQriyiUvjTwOHg8QZaPihLWeRAAVoCpE00IUPn0Bjt8=
 github.com/vmihailenco/msgpack/v5 v5.4.1/go.mod h1:GaZTsDaehaPpQVyxrf5mtQlH+pc21PIudVV/E3rRQok=
 github.com/vmihailenco/tagparser/v2 v2.0.0 h1:y09buUbR+b5aycVFQs/g70pqKVZNBmxwAhO7/IwNM9g=
