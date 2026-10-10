@@ -2,10 +2,9 @@
 
 A Terraform and OpenTofu provider for the OpenLLMProxy management API.
 The provider uses the contract-generated OLP management client, mounted token
-files, current caller authority and observed resource ETags. The M11 provider
-implementation is in progress; the qualified resource set currently includes
+files, current caller authority and observed resource ETags. The resource set includes
 projects, providers, credential slots, routes, routing policies, guardrails, export sinks, keys,
-budget groups, notification destinations and notification rules.
+budget groups, notification destinations, notification rules and upstream MCP servers.
 
 Each resource accepts a `definition` containing the JSON fields of its OLP
 creation request. Mutable fields update through the declared API; changes to
@@ -27,7 +26,7 @@ installation-wide `manage_projects` token whose creator remains an owner;
 budget and notification administration use the corresponding `keys` or
 installation `settings` scopes.
 
-Credential values are rejected from `definition`. Provider, slot, sink and notification secrets
+Credential values are rejected from `definition`. Provider, slot, sink, MCP and notification secrets
 use the separate `secret` write-only attribute and a positive `secret_version`
 change counter. Supply the value through an ephemeral variable, and increment
 the counter when rotating it. Terraform 1.11+ and OpenTofu 1.11+ support this
@@ -196,3 +195,20 @@ deletion. Saved plans refuse external edits. Configuration promotion moves only
 logical definitions and separately supplied destination signing bindings, not
 queued events, counters or local secret values. See the gateway's
 [export sink guide](https://github.com/tyk-swe/olp/blob/tyk/m11-operator-ecosystem/docs/export-sinks.md).
+
+## Certified upstream MCP servers
+
+`openllmproxy_mcp_server` manages a project-owned Streamable HTTP registration.
+Its definition contains name, project UUID, transport, endpoint and enabled state.
+Create/update certifies a bounded, credential-safe tool catalog outside database
+locks, then repeats authority and ETag checks before appending an immutable
+revision. Reads use the approved catalog without contacting the upstream.
+
+Static bearer values use sensitive write-only `secret`, an ephemeral input and
+positive `secret_version`; values never enter saved plans or state. UUID imports
+reconstruct nonsecret configuration. An upstream change requires an explicit
+reviewed update; a foreign registration change invalidates a saved plan. Destroy
+retires the registration and removes authentication material while preserving
+old catalogs and the project boundary. The management resource certifies catalogs
+without invoking upstream tools. See the gateway's
+[registration guide](https://github.com/tyk-swe/olp/blob/tyk/m11-operator-ecosystem/docs/mcp-servers.md).
